@@ -1,0 +1,104 @@
+Challenge scenario
+
+You are the lead Google Kubernetes Engine admin on a team that manages the online shop for OnlineBoutique.
+
+You are ready to deploy your team's site to Google Kubernetes Engine but you are still looking for ways to make sure that you're able to keep costs down and performance up.
+
+You will be responsible for deploying the OnlineBoutique app to GKE and making some configuration changes that have been recommended for cost optimization.
+
+Here are some guidelines you've been requested to follow when deploying:
+
+    Create the cluster in the us-central1 region.
+
+    The naming scheme is team-resource-number, e.g. a cluster could be named .
+
+    For your initial cluster, start with machine size n1-standard-2 (2 vCPU, 8G memory).
+
+    Set your cluster to use the rapid release-channel.
+    
+
+Task 1. Create our cluster and deploy our app
+
+--- Create cluster
+gcloud container clusters create onlineboutique-cluster-382 \
+  --machine-type=n1-standard-2 \
+  --num-nodes=2 \
+  --zone=us-central1-a  \
+  --release-channel rapid
+
+
+--- Create 2 namespaces for dev and prod:
+kubectl create namespace dev && \
+kubectl create namespace prod
+
+--- deploy the application to the dev namespace with the following command:
+git clone https://github.com/GoogleCloudPlatform/microservices-demo.git &&
+cd microservices-demo && kubectl apply -f ./release/kubernetes-manifests.yaml --namespace dev
+
+Task 2. Migrate to an optimized node pool
+-----Migrating to a new node pool------------------------------------------------------------------
+-- Create a node pool
+
+gcloud container node-pools create optimized-pool-2668\
+  --cluster=onlineboutique-cluster-382 \
+  --machine-type=custom-2-3584 \
+  --num-nodes=2 \
+  --zone=us-central1-a
+
+-- cordon the original node pool:
+for node in $(kubectl get nodes -l cloud.google.com/gke-nodepool=default-pool -o=name); do
+  kubectl cordon "$node";
+done
+
+-- drain the pool:
+for node in $(kubectl get nodes -l cloud.google.com/gke-nodepool=default-pool -o=name); do
+  kubectl drain --force --ignore-daemonsets --delete-local-data --grace-period=10 "$node";
+done
+
+-- delete the old node pool:
+gcloud container node-pools delete default-pool --cluster onlineboutique-cluster-382 --zone us-central1-a
+
+-- See which pods are running:
+kubectl get pods -o=wide --namespace=dev
+
+------------------------------------------------------------------------------------------------------
+
+
+Task 3. Apply a frontend update
+
+You just got it all deployed, and now the dev team wants you to push a last-minute update before the upcoming release! That's ok. You know this can be done without the need to cause down time.
+
+    Set a pod disruption budget for your frontend deployment.
+
+    Name it onlineboutique-frontend-pdb.
+
+    Set the min-availability of your deployment to 1.
+  
+  
+--- Pod disruption budget
+kubectl create poddisruptionbudget onlineboutique-frontend-pdb --selector run=frontend --min-available 1 --namespace dev
+
+--- Edit the kubernetes-manifests.yaml. Find the image section for the frontend deployment, replace the image as follow:
+--- image:gcr.io/qwiklabs-resources/onlineboutique-frontend:v2.1
+--- imagePullPolicy: Always
+
+
+-- Apply the updated manifest kubernetes-manifests.yaml to your cluster
+kubectl apply -f ./release/kubernetes-manifests.yaml --namespace dev
+
+
+Task 4. Autoscale from estimated traffic
+
+-- Apply horizontal autoscaling to the frontend deployment:
+
+kubectl autoscale deployment frontend --cpu-percent=50 --min=1 --max=12 --namespace dev
+kubectl get hpa --namespace dev
+
+-- Check the current status of your Horizontal Pod Autoscaler:
+kubectl get hpa
+
+-- Enable autoscaling for your cluster:
+gcloud beta container clusters update onlineboutique-cluster-382 --enable-autoscaling --min-nodes 1 --max-nodes 6 --zone=us-central1-a
+
+
+
